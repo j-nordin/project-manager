@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REGISTRY_DIR="$HOME/.config/project"
+REGISTRY="$REGISTRY_DIR/registry"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+err() { echo -e "${RED}error:${NC} $1" >&2; exit 1; }
+warn() { echo -e "${YELLOW}warning:${NC} $1" >&2; }
+ok() { echo -e "${GREEN}$1${NC}"; }
+
+ensure_registry() {
+    mkdir -p "$REGISTRY_DIR"
+    touch "$REGISTRY"
+}
+
+# --- add ---
+cmd_add() {
+    local path="" name=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) name="$2"; shift 2 ;;
+            -*) err "unknown option: $1" ;;
+            *) path="$1"; shift ;;
+        esac
+    done
+
+    path="${path:-$PWD}"
+    path="$(realpath "$path")"
+    [[ -d "$path" ]] || err "not a directory: $path"
+
+    name="${name:-$(basename "$path")}"
+    name="$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')"
+    [[ -z "$name" ]] && err "could not derive a valid name"
+
+    ensure_registry
+
+    if grep -q "^${name}:" "$REGISTRY" 2>/dev/null; then
+        err "project '$name' already exists"
+    fi
+    if grep -q ":${path}$" "$REGISTRY" 2>/dev/null; then
+        local existing
+        existing="$(grep ":${path}$" "$REGISTRY" | cut -d: -f1)"
+        err "path already registered as '$existing'"
+    fi
+
+    echo "${name}:${path}" >> "$REGISTRY"
+    ok "Added project '${name}' -> ${path}"
+}
+
+# --- remove ---
+cmd_remove() {
+    [[ $# -lt 1 ]] && err "usage: project remove <name>"
+    local name="$1"
+
+    ensure_registry
+
+    if ! grep -q "^${name}:" "$REGISTRY" 2>/dev/null; then
+        err "no project named '$name'"
+    fi
+
+    sed -i "/^${name}:/d" "$REGISTRY"
+    ok "Removed project '$name'"
+}
+
+# --- list ---
+cmd_list() {
+    ensure_registry
+
+    if [[ ! -s "$REGISTRY" ]]; then
+        echo "No projects registered."
+        return
+    fi
+
+    if [[ "${1:-}" == "--names-only" ]]; then
+        cut -d: -f1 "$REGISTRY"
+        return
+    fi
+
+    echo -e "${BOLD}NAME\tPATH${NC}"
+    while IFS=: read -r name path; do
+        echo -e "${name}\t${path}"
+    done < "$REGISTRY" | column -t -s $'\t'
+}
+
+# --- open ---
+wait_for_window() {
+    local class="$1" ws="$2" timeout="${3:-5}"
+    local deadline=$((SECONDS + timeout))
+    while [[ $SECONDS -lt $deadline ]]; do
+        if i3-msg -t get_tree 2>/dev/null | \
+            jq -e --arg ws "$ws" --arg cls "$class" \
+            '.. | objects | select(.type? == "workspace" and .name? == $ws) |
+             .. | objects | select(.window_properties?.class? == $cls)' \
+            >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+find_free_workspace() {
+    local used
+    used="$(i3-msg -t get_workspaces 2>/dev/null | jq -r '.[].num')"
+    for n in $(seq 1 10); do
+        if ! echo "$used" | grep -qx "$n"; then
+            echo "$n"
+            return 0
+        fi
+    done
+    return 1
+}
+
+cmd_open() {
+    local name="" ws=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --workspace) ws="$2"; shift 2 ;;
+            -*) err "unknown option: $1" ;;
+            *) name="$1"; shift ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && err "usage: project open <name> [--workspace N]"
+
+    ensure_registry
+
+    local path
+    path="$(grep "^${name}:" "$REGISTRY" 2>/dev/null | cut -d: -f1 --complement)"
+    [[ -z "$path" ]] && err "no project named '$name'"
+    [[ -d "$path" ]] || err "path no longer exists: $path (run: project remove $name)"
+
+    # Find workspace
+    if [[ -z "$ws" ]]; then
+        ws="$(find_free_workspace)" || err "no free workspaces (1-10)"
+    fi
+
+    echo "Opening '$name' on workspace $ws..."
+
+    # Switch to workspace
+    i3-msg "workspace number $ws" >/dev/null
+
+    # 1. Launch VS Code
+    code "$path" &
+    if wait_for_window "Code" "$ws" 8; then
+        sleep 0.3
+    else
+        warn "VS Code window did not appear in time"
+    fi
+
+    # 2. Split horizontal — next window goes right
+    i3-msg "split h" >/dev/null
+
+    # 3. Launch Firefox
+    firefox &
+    if wait_for_window "firefox" "$ws" 8; then
+        sleep 0.3
+    else
+        # Try alternate class name
+        if ! wait_for_window "Navigator" "$ws" 2; then
+            warn "Firefox window did not appear in time"
+        fi
+    fi
+
+    # 4. Split vertical — next window goes below Firefox
+    i3-msg "split v" >/dev/null
+
+    # 5. Launch Alacritty
+    alacritty --working-directory "$path" &
+    if wait_for_window "Alacritty" "$ws" 5; then
+        sleep 0.2
+    else
+        warn "Alacritty window did not appear in time"
+    fi
+
+    # 6. Focus VS Code and resize
+    i3-msg "[class=\"Code\" workspace=\"$ws\"] focus" >/dev/null 2>&1
+    i3-msg "resize set 55 ppt 0 ppt" >/dev/null 2>&1
+
+    ok "Project '$name' opened on workspace $ws"
+}
+
+# --- help ---
+cmd_help() {
+    cat <<'EOF'
+Usage: project <command> [options]
+
+Commands:
+  add [path] [--name NAME]     Register a folder as a project (default: current dir)
+  remove <name>                Unregister a project
+  list [--names-only]          Show all registered projects
+  open <name> [--workspace N]  Open project on a new i3 workspace
+  help                         Show this help
+
+Layout (open):
+  Left:  VS Code in project folder
+  Right: Firefox (top) + Terminal (bottom)
+EOF
+}
+
+# --- main ---
+case "${1:-help}" in
+    add)    shift; cmd_add "$@" ;;
+    remove) shift; cmd_remove "$@" ;;
+    list)   shift; cmd_list "$@" ;;
+    open)   shift; cmd_open "$@" ;;
+    help|--help|-h) cmd_help ;;
+    *)      err "unknown command: $1 (try: project help)" ;;
+esac
