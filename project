@@ -171,10 +171,10 @@ cmd_open() {
         fi
     fi
 
-    # 4. Split vertical — next window goes below Firefox
-    i3-msg "split v" >/dev/null
+    # 4. Set right pane to stacking layout
+    i3-msg "layout stacking" >/dev/null
 
-    # 5. Launch Alacritty
+    # 5. Launch Alacritty (stacked with Firefox)
     alacritty --working-directory "$path" &
     if wait_for_window "Alacritty" "$ws" 5; then
         sleep 0.2
