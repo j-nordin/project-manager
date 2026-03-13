@@ -93,7 +93,7 @@ Show usage information.
 Bind a rofi picker to quickly open projects. Example i3 config:
 
 ```
-bindsym $mod+p exec --no-startup-id project open "$(project list --names-only | rofi -dmenu -p 'project')"
+bindsym $mod+p exec --no-startup-id project open "$(project list --names-only | rofi -dmenu -p 'project' | awk '{print $1}')"
 ```
 
 ## Configuration

@@ -80,7 +80,7 @@ cmd_list() {
     fi
 
     if [[ "${1:-}" == "--names-only" ]]; then
-        cut -d: -f1 "$REGISTRY" | sort
+        awk -F: '{print $1"\t("$2")"}' "$REGISTRY" | sort | column -t -s $'\t'
         return
     fi
 
