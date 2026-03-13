@@ -80,7 +80,7 @@ cmd_list() {
     fi
 
     if [[ "${1:-}" == "--names-only" ]]; then
-        cut -d: -f1 "$REGISTRY"
+        cut -d: -f1 "$REGISTRY" | sort
         return
     fi
 
